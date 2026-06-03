@@ -60,6 +60,27 @@ $buildRoot  = Join-Path $repoRoot "_build"
 $stagingDir = Join-Path $repoRoot "_staging"
 
 # ---------------------------------------------------------------------------
+# cmake discovery
+# If cmake is not on PATH (common when not running inside a VS Developer
+# shell), locate it via vswhere in the Visual Studio installation.
+# ---------------------------------------------------------------------------
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+    $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $vsRoot  = & $vswhere -latest -property installationPath 2>$null
+        $cmakeDir = Join-Path $vsRoot `
+            "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+        if (Test-Path $cmakeDir) {
+            $env:PATH = "$cmakeDir;$env:PATH"
+            Write-Host "cmake added from: $cmakeDir"
+        }
+    }
+    if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+        throw "cmake not found. Install CMake or run from a VS Developer shell."
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 function Invoke-Cmake {
