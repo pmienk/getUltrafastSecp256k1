@@ -272,6 +272,21 @@ if (-not $SkipBuild) {
             Copy-Item -Destination $libDst -Force
     }
 
+    # -------------------------------------------------------------------------
+    # 3b-i. ufsecp C ABI headers
+    #
+    #     cmake install only copies include/secp256k1/ (the C++ headers).
+    #     The ufsecp C ABI headers (ufsecp.h, ufsecp_error.h, ...) live in
+    #     include/ufsecp/ in the source tree and must be copied manually.
+    #     They are needed at runtime by ufsecp_libbitcoin.h via relative
+    #     includes such as "ufsecp_error.h".
+    # -------------------------------------------------------------------------
+    $ufsecpSrcDir = Join-Path $sourceDir "include\ufsecp"
+    $ufsecpDstDir = Join-Path $stagingDir "x64\static\Release\include\ufsecp"
+    New-Item -ItemType Directory -Force $ufsecpDstDir | Out-Null
+    Get-ChildItem $ufsecpSrcDir -Filter "*.h" | Copy-Item -Destination $ufsecpDstDir -Force
+    Write-Host "ufsecp headers copied to staging."
+
     # Copy the bridge public header into the canonical include tree so Targets.cs
     # includes it when it copies headers to the package.
     $bridgeHeader = Join-Path $bridgeSrcDir "include\ufsecp_libbitcoin.h"
