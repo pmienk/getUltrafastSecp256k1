@@ -1,0 +1,33 @@
+# Normalize line endings to LF in the repository, check out as CRLF on Windows
+* text=auto
+
+# Scripts — keep LF on all platforms
+*.sh    text eol=lf
+*.ps1   text eol=crlf
+
+# Source files
+*.c     text eol=lf
+*.cpp   text eol=lf
+*.h     text eol=lf
+*.hpp   text eol=lf
+*.cs    text eol=lf
+
+# XML / project files
+*.csproj  text eol=lf
+*.vcxproj text eol=lf
+*.sln     text eol=crlf
+*.nuspec  text eol=lf
+*.targets text eol=lf
+*.config  text eol=lf
+*.yml     text eol=lf
+
+# Documentation
+*.md    text eol=lf
+*.txt   text eol=lf
+
+# Binaries — do not modify
+*.lib   binary
+*.dll   binary
+*.exe   binary
+*.pdb   binary
+*.nupkg binary

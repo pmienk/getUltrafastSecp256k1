@@ -1,0 +1,51 @@
+name: Build and Pack
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (empty = read from source VERSION.txt)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    # Requires a self-hosted Windows runner with:
+    #   - Visual Studio 2026 (vc145), "Desktop development with C++" workload
+    #   - CMake >= 3.25 on PATH
+    #   - .NET 8 SDK on PATH
+    #   - nuget.exe on PATH
+    runs-on: [self-hosted, windows, vs2026]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone source and build
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ('${{ github.event.inputs.version }}' -ne '') {
+              $extra = @('-Version', '${{ github.event.inputs.version }}')
+          }
+          .\build.ps1 @extra
+
+      - name: Pack
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ('${{ github.event.inputs.version }}' -ne '') {
+              $extra = @('-Version', '${{ github.event.inputs.version }}')
+          }
+          .\build.ps1 -SkipClone -SkipBuild -Pack @extra
+
+      - name: Upload .nupkg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: '*.nupkg'
+          if-no-files-found: error
