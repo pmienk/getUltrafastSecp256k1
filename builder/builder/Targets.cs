@@ -25,6 +25,12 @@ internal static class Targets
     private static readonly XNamespace Ns =
         "http://schemas.microsoft.com/developer/msbuild/2003";
 
+    // Restricts all lib and include conditions to our supported target:
+    // x64 architecture, vc145 toolset only.  Prevents the targets from
+    // firing on ARM, ARM64, or older/newer toolsets where no libs exist.
+    private const string PlatformCond =
+        "'$(Platform)' == 'x64' And '$(PlatformToolset)' == 'v145'";
+
     public static void Generate(string packageDir)
     {
         string targetsDir = Path.Combine(packageDir, "build", "native");
@@ -54,11 +60,12 @@ internal static class Targets
                 new XElement(Ns + "UltrafastSecp256k1_SharedLibDir",
                     @"$(MSBuildThisFileDirectory)..\..\lib\native\x64\$(Configuration)\shared\")),
 
-            // Include paths — only when linked (any non-empty linkage value).
+            // Include paths — only when linked and on the supported target.
             // Add both include\ and include\ufsecp\ so that headers inside
             // ufsecp/ that use relative includes (e.g. "ufsecp_error.h") work.
             new XElement(Ns + "ItemDefinitionGroup",
-                new XAttribute("Condition", "'$(Linkage-UltrafastSecp256k1)' != ''"),
+                new XAttribute("Condition",
+                    $"'$(Linkage-UltrafastSecp256k1)' != '' And {PlatformCond}"),
                 new XElement(Ns + "ClCompile",
                     new XElement(Ns + "AdditionalIncludeDirectories",
                         @"$(UltrafastSecp256k1_IncludeDir);$(UltrafastSecp256k1_IncludeDir)ufsecp\;%(AdditionalIncludeDirectories)"))),
@@ -66,7 +73,7 @@ internal static class Targets
             // Static: preprocessor define + lib directory
             new XElement(Ns + "ItemDefinitionGroup",
                 new XAttribute("Condition",
-                    "'$(Linkage-UltrafastSecp256k1)' == 'static'"),
+                    $"'$(Linkage-UltrafastSecp256k1)' == 'static' And {PlatformCond}"),
                 new XElement(Ns + "ClCompile",
                     new XElement(Ns + "PreprocessorDefinitions",
                         "UFSECP_STATIC;%(PreprocessorDefinitions)")),
@@ -80,7 +87,7 @@ internal static class Targets
             // Dynamic: lib directory
             new XElement(Ns + "ItemDefinitionGroup",
                 new XAttribute("Condition",
-                    "'$(Linkage-UltrafastSecp256k1)' == 'dynamic'"),
+                    $"'$(Linkage-UltrafastSecp256k1)' == 'dynamic' And {PlatformCond}"),
                 new XElement(Ns + "Link",
                     new XElement(Ns + "AdditionalLibraryDirectories",
                         @"$(UltrafastSecp256k1_SharedLibDir);%(AdditionalLibraryDirectories)"))),
@@ -120,7 +127,7 @@ internal static class Targets
 
         return new XElement(Ns + "ItemDefinitionGroup",
             new XAttribute("Condition",
-                $"'$(Linkage-UltrafastSecp256k1)' == 'static' And '$(Configuration)' == '{config}'"),
+                $"'$(Linkage-UltrafastSecp256k1)' == 'static' And '$(Configuration)' == '{config}' And {PlatformCond}"),
             new XElement(Ns + "Link",
                 new XElement(Ns + "AdditionalDependencies", deps)));
     }
@@ -141,7 +148,7 @@ internal static class Targets
 
         return new XElement(Ns + "ItemDefinitionGroup",
             new XAttribute("Condition",
-                $"'$(Linkage-UltrafastSecp256k1)' == 'dynamic' And '$(Configuration)' == '{config}'"),
+                $"'$(Linkage-UltrafastSecp256k1)' == 'dynamic' And '$(Configuration)' == '{config}' And {PlatformCond}"),
             new XElement(Ns + "Link",
                 new XElement(Ns + "AdditionalDependencies", deps)));
     }
@@ -153,7 +160,7 @@ internal static class Targets
     private static XElement DllCopyGroup(string config)
     {
         string condition =
-            $"'$(Linkage-UltrafastSecp256k1)' == 'dynamic' And '$(Configuration)' == '{config}'";
+            $"'$(Linkage-UltrafastSecp256k1)' == 'dynamic' And '$(Configuration)' == '{config}' And {PlatformCond}";
 
         var group = new XElement(Ns + "ItemGroup",
             new XAttribute("Condition", condition));
