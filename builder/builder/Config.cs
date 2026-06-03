@@ -40,6 +40,14 @@ internal static class Config
     /// <summary>NuGet package identifier, e.g. "UltrafastSecp256k1-vc145".</summary>
     public static string PackageId => $"UltrafastSecp256k1-{Toolset}";
 
+    /// <summary>
+    /// Flat lib directory: all compiled .lib files with encoded names live here.
+    /// Naming: {lib}-x64-{toolset}-{runtime}-{version}.lib
+    ///   mt-s   = /MT Release static
+    ///   mt-sgd = /MTd Debug static
+    /// </summary>
+    public static string FlatLibDir => Path.Combine(StagingDir, "lib");
+
     // -----------------------------------------------------------------------
     // Build matrix — must mirror the values used in build.ps1
     // -----------------------------------------------------------------------

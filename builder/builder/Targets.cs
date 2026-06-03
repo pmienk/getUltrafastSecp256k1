@@ -101,18 +101,31 @@ internal static class Targets
     }
 
     // -----------------------------------------------------------------------
-    // Static lib filenames — scanned from staging so the file stays correct
-    // even if CMake output names change in a future version.
+    // Static lib groups — scanned from the flat staging lib dir.
+    //
+    // Flat lib naming (Boost-style, set by build.ps1):
+    //   mt-s   in the filename → Release (/MT)
+    //   mt-sgd in the filename → Debug   (/MTd)
+    //
+    // Using Contains() rather than a glob so "-mt-s-" never matches "-mt-sgd-".
     // -----------------------------------------------------------------------
 
     private static XElement StaticLibGroup(string config)
     {
-        string libDir = Path.Combine(
-            Config.StagingDir, "x64", "static", config, "lib");
+        string suffix = config == "Release" ? "-mt-s-" : "-mt-sgd-";
 
-        var paths = ScanLibPaths(libDir, "x64", config, "static");
+        var paths = new List<string>();
+        if (Directory.Exists(Config.FlatLibDir))
+        {
+            paths = Directory.GetFiles(Config.FlatLibDir, "*.lib")
+                .Where(f => Path.GetFileName(f).Contains(suffix))
+                .Select(f =>
+                    $@"$(MSBuildThisFileDirectory)..\..\lib\native\{Path.GetFileName(f)}")
+                .ToList();
+        }
+
         if (paths.Count == 0)
-            Console.WriteLine($"WARNING: no .lib found for static/{config}");
+            Console.WriteLine($"WARNING: no flat libs found for config={config} (suffix={suffix})");
 
         string deps = string.Join(";", paths) + ";%(AdditionalDependencies)";
 
@@ -124,24 +137,15 @@ internal static class Targets
     }
 
     // -----------------------------------------------------------------------
-    // Shared (import lib) full paths
+    // Shared groups — placeholder; shared libs not yet in flat staging.
     // -----------------------------------------------------------------------
 
-    private static XElement SharedLibGroup(string config)
-    {
-        string libDir = Path.Combine(
-            Config.StagingDir, "x64", "shared", config, "lib");
-
-        var paths = ScanLibPaths(libDir, "x64", config, "shared");
-
-        string deps = string.Join(";", paths) + ";%(AdditionalDependencies)";
-
-        return new XElement(Ns + "ItemDefinitionGroup",
+    private static XElement SharedLibGroup(string config) =>
+        new XElement(Ns + "ItemDefinitionGroup",
             new XAttribute("Condition",
                 $"'$(Linkage-UltrafastSecp256k1)' == 'dynamic' And '$(Configuration)' == '{config}' And {PlatformCond}"),
             new XElement(Ns + "Link",
-                new XElement(Ns + "AdditionalDependencies", deps)));
-    }
+                new XElement(Ns + "AdditionalDependencies", "%(AdditionalDependencies)")));
 
     // -----------------------------------------------------------------------
     // DLL copy — copies shared library to the build output directory
@@ -178,24 +182,6 @@ internal static class Targets
     // Helpers
     // -----------------------------------------------------------------------
 
-    /// <summary>
-    /// Returns full MSBuild paths for all .lib files in the staging dir.
-    /// Paths are package-relative using $(MSBuildThisFileDirectory), so VS
-    /// can resolve and display them correctly in AdditionalDependencies.
-    /// </summary>
-    private static List<string> ScanLibPaths(
-        string stagingLibDir, string arch, string config, string linkType)
-    {
-        if (!Directory.Exists(stagingLibDir))
-            return new List<string>();
-
-        // $(MSBuildThisFileDirectory) = build/native/ inside the package.
-        // Two levels up brings us to the package root, then into lib/native/.
-        return Directory.GetFiles(stagingLibDir, "*.lib")
-            .Select(f =>
-                $@"$(MSBuildThisFileDirectory)..\..\lib\native\{arch}\{config}\{linkType}\{Path.GetFileName(f)}")
-            .ToList();
-    }
 
     private static void CopyDirectory(string src, string dst)
     {

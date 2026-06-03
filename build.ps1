@@ -200,6 +200,9 @@ if (-not $SkipBuild) {
                 "-A", $arch.CMakeArch,
                 # Debug libs get a 'd' suffix so Release and Debug can coexist
                 "-DCMAKE_DEBUG_POSTFIX=d",
+                # Static CRT (/MT /MTd) — required for libbitcoin compatibility.
+                # Generator expression: MultiThreaded in Release, MultiThreadedDebug in Debug.
+                '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
                 # Shared vs static
                 ("-DSECP256K1_BUILD_SHARED=" + $link.BuildShared),
                 # Components to build
@@ -251,6 +254,12 @@ if (-not $SkipBuild) {
         "-G", $Generator,
         "-A", "x64",
         "-DCMAKE_DEBUG_POSTFIX=d",
+        # Static CRT — must match the main library and libbitcoin.
+        '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
+        # UFSECP_STATIC removes __declspec(dllimport) from ufsecp.h so the
+        # bridge links against the static C ABI (ufsecp_s.lib) rather than
+        # expecting DLL import symbols (__imp_ufsecp_*).
+        "-DCMAKE_CXX_FLAGS=/DUFSECP_STATIC",
         # Point cmake at the installed secp256k1-fast package config so the
         # bridge finds fastsecp256k1 without needing the full source tree.
         ("-DCMAKE_PREFIX_PATH=" + (Join-Path $stagingDir "x64\static\Release")),
@@ -263,12 +272,18 @@ if (-not $SkipBuild) {
         Write-Step ("Build+Copy  bridge/" + $config)
         Invoke-Cmake @("--build", $bridgeBuildDir, "--config", $config, "--parallel")
 
-        # Copy bridge lib into the matching static staging lib directory so the
-        # C# builder finds it alongside fastsecp256k1.lib.
-        $libSrc = Join-Path $bridgeBuildDir $config
         $libDst = Join-Path $stagingDir ("x64\static\" + $config + "\lib")
         New-Item -ItemType Directory -Force $libDst | Out-Null
+
+        # Bridge wrapper
+        $libSrc = Join-Path $bridgeBuildDir $config
         Get-ChildItem $libSrc -Filter "ufsecp_lbtc_bridge*.lib" -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $libDst -Force
+
+        # ufsecp C ABI static lib — no cmake install() rule, copy from build output.
+        # Required because the bridge calls ufsecp_* functions declared in ufsecp.h.
+        $ufsecpLibSrc = Join-Path $buildRoot ("x64_static\include\ufsecp\" + $config)
+        Get-ChildItem $ufsecpLibSrc -Filter "ufsecp_s*.lib" -ErrorAction SilentlyContinue |
             Copy-Item -Destination $libDst -Force
     }
 
@@ -309,6 +324,47 @@ if (-not $SkipBuild) {
     $shimDstDir = Join-Path $stagingDir "x64\static\Release\include"
     Get-ChildItem $shimSrcDir -Filter "*.h" | Copy-Item -Destination $shimDstDir -Force
     Write-Host "Shim headers copied to staging."
+
+    # -------------------------------------------------------------------------
+    # 3d. Flat lib consolidation
+    #
+    #     All compiled .lib files are renamed to include every build parameter
+    #     and copied to a single flat directory (_staging/lib/).  Encoding
+    #     arch, toolset, runtime and config in the filename:
+    #       - prevents CRT/config mismatches (impossible to pick wrong variant)
+    #       - eliminates nested path logic in the MSBuild .targets file
+    #
+    #     Naming convention (Boost-style):
+    #       {lib}-x64-{toolset}-{runtime}-{version}.lib
+    #         mt-s   = /MT static lib, Release
+    #         mt-sgd = /MTd static lib, Debug   (s=static, g=debug, d=debug-crt)
+    # -------------------------------------------------------------------------
+    Write-Step "Consolidating libs to flat staging dir"
+    $flatLibDir = Join-Path $stagingDir "lib"
+    New-Item -ItemType Directory -Force $flatLibDir | Out-Null
+
+    $ver = $Version.Replace(".", "_")
+
+    function Copy-Flat {
+        param([string]$Src, [string]$Base, [string]$Suffix)
+        if (Test-Path $Src) {
+            $dst = Join-Path $flatLibDir ($Base + "-x64-vc145-" + $Suffix + "-" + $ver + ".lib")
+            Copy-Item $Src $dst -Force
+            Write-Host ("  " + (Split-Path $dst -Leaf))
+        } else {
+            Write-Warning ("Not found (skipping): " + $Src)
+        }
+    }
+
+    $sR = Join-Path $stagingDir "x64\static\Release\lib"
+    $sD = Join-Path $stagingDir "x64\static\Debug\lib"
+
+    Copy-Flat (Join-Path $sR "fastsecp256k1.lib")       "fastsecp256k1"      "mt-s"
+    Copy-Flat (Join-Path $sR "ufsecp_s.lib")             "ufsecp_s"           "mt-s"
+    Copy-Flat (Join-Path $sR "ufsecp_lbtc_bridge.lib")   "ufsecp_lbtc_bridge" "mt-s"
+    Copy-Flat (Join-Path $sD "fastsecp256k1d.lib")       "fastsecp256k1"      "mt-sgd"
+    Copy-Flat (Join-Path $sD "ufsecp_sd.lib")             "ufsecp_s"           "mt-sgd"
+    Copy-Flat (Join-Path $sD "ufsecp_lbtc_bridged.lib")   "ufsecp_lbtc_bridge" "mt-sgd"
 }
 
 # ---------------------------------------------------------------------------

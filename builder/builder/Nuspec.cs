@@ -56,10 +56,7 @@ internal static class Nuspec
             | `build/native/include/secp256k1/` | C++ public headers |
             | `build/native/include/ufsecp/` | C ABI public headers |
             | `build/native/include/ufsecp_libbitcoin.h` | libbitcoin bridge header |
-            | `lib/native/x64/Release/static/` | Release static libs |
-            | `lib/native/x64/Debug/static/` | Debug static libs |
-            | `lib/native/x64/Release/shared/` | Release import lib |
-            | `lib/native/x64/Debug/shared/` | Debug import lib |
+            | `lib/native/*.lib` | All libs with encoded names (Boost-style) |
 
             ## Platforms
 
@@ -148,21 +145,13 @@ internal static class Nuspec
             files.Add(FileEntry(file, relative));
         }
 
-        // Lib / dll / pdb files live in _staging/ — add with explicit targets.
-        foreach (string arch     in Config.Archs)
-        foreach (string config   in Config.Configs)
-        foreach (string linkType in Config.LinkTypes)
+        // Flat lib dir: all libs with Boost-style encoded names.
+        // build.ps1 consolidates everything here; the C# builder just enumerates.
+        if (Directory.Exists(Config.FlatLibDir))
         {
-            string libDir = Path.Combine(
-                Config.StagingDir, arch, linkType, config, "lib");
-            if (!Directory.Exists(libDir))
-                continue;
-
-            foreach (string file in Directory.GetFiles(libDir))
+            foreach (string file in Directory.GetFiles(Config.FlatLibDir, "*.lib"))
             {
-                string target = Path.Combine(
-                    "lib", "native", arch, config, linkType,
-                    Path.GetFileName(file));
+                string target = Path.Combine("lib", "native", Path.GetFileName(file));
                 files.Add(FileEntry(file, target));
             }
         }
