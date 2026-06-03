@@ -232,6 +232,52 @@ if (-not $SkipBuild) {
             }
         }
     }
+
+    # -------------------------------------------------------------------------
+    # 3b. libbitcoin bridge (ufsecp_lbtc_bridge)
+    #
+    #     compat/libbitcoin_bridge/ has no install() rules, so we build it
+    #     separately and copy the outputs into the existing static staging dirs.
+    #     This makes the C# builder pick them up automatically alongside
+    #     fastsecp256k1.lib without any extra configuration.
+    # -------------------------------------------------------------------------
+    $bridgeSrcDir  = Join-Path $sourceDir "compat\libbitcoin_bridge"
+    $bridgeBuildDir = Join-Path $buildRoot "x64_bridge"
+
+    Write-Step "Configure  bridge (libbitcoin)"
+    Invoke-Cmake @(
+        "-S", $bridgeSrcDir,
+        "-B", $bridgeBuildDir,
+        "-G", $Generator,
+        "-A", "x64",
+        "-DCMAKE_DEBUG_POSTFIX=d",
+        # Point cmake at the installed secp256k1-fast package config so the
+        # bridge finds fastsecp256k1 without needing the full source tree.
+        ("-DCMAKE_PREFIX_PATH=" + (Join-Path $stagingDir "x64\static\Release")),
+        "-DUFSECP_LBTC_BUILD_TESTS=OFF",
+        "-DUFSECP_LBTC_BUILD_EXAMPLE=OFF",
+        "-DUFSECP_LBTC_WITH_GPU=OFF"
+    )
+
+    foreach ($config in @("Release", "Debug")) {
+        Write-Step ("Build+Copy  bridge/" + $config)
+        Invoke-Cmake @("--build", $bridgeBuildDir, "--config", $config, "--parallel")
+
+        # Copy bridge lib into the matching static staging lib directory so the
+        # C# builder finds it alongside fastsecp256k1.lib.
+        $libSrc = Join-Path $bridgeBuildDir $config
+        $libDst = Join-Path $stagingDir ("x64\static\" + $config + "\lib")
+        New-Item -ItemType Directory -Force $libDst | Out-Null
+        Get-ChildItem $libSrc -Filter "ufsecp_lbtc_bridge*.lib" -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $libDst -Force
+    }
+
+    # Copy the bridge public header into the canonical include tree so Targets.cs
+    # includes it when it copies headers to the package.
+    $bridgeHeader = Join-Path $bridgeSrcDir "include\ufsecp_libbitcoin.h"
+    $headerDst    = Join-Path $stagingDir "x64\static\Release\include\ufsecp_libbitcoin.h"
+    Copy-Item $bridgeHeader $headerDst -Force
+    Write-Host "Bridge header copied to staging."
 }
 
 # ---------------------------------------------------------------------------
