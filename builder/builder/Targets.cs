@@ -51,27 +51,26 @@ internal static class Targets
                     new XAttribute("Include",
                         @"$(MSBuildThisFileDirectory)package.xml"))),
 
-            // Include dir declared as a property so both the unconditional group
-            // and the ufsecp\ sub-path can reference it cleanly.
-            new XElement(Ns + "PropertyGroup",
-                new XElement(Ns + "UltrafastSecp256k1_IncludeDir",
-                    @"$(MSBuildThisFileDirectory)include\")),
-
-            // Include paths — only when linked and on the supported target.
-            // Add both include\ and include\ufsecp\ so that headers inside
-            // ufsecp/ that use relative includes (e.g. "ufsecp_error.h") work.
+            // General: fired for any non-empty linkage (static or dynamic).
+            // Both include\ and include\ufsecp\ are needed so that relative
+            // includes inside ufsecp_libbitcoin.h (e.g. "ufsecp_error.h") resolve.
+            // AdditionalLibraryDirectories points at the flat lib dir so that
+            // AdditionalDependencies can use bare filenames with no path prefix.
+            // WITH_ULTRAFAST lets consumer code conditionally compile the
+            // UltrafastSecp256k1 code path.
             new XElement(Ns + "ItemDefinitionGroup",
                 new XAttribute("Condition",
                     $"'$(Linkage-UltrafastSecp256k1)' != '' And {PlatformCond}"),
                 new XElement(Ns + "ClCompile",
                     new XElement(Ns + "AdditionalIncludeDirectories",
-                        @"$(UltrafastSecp256k1_IncludeDir);$(UltrafastSecp256k1_IncludeDir)ufsecp\;%(AdditionalIncludeDirectories)"))),
+                        @"$(MSBuildThisFileDirectory)include\;$(MSBuildThisFileDirectory)include\ufsecp\;%(AdditionalIncludeDirectories)"),
+                    new XElement(Ns + "PreprocessorDefinitions",
+                        "WITH_ULTRAFAST;%(PreprocessorDefinitions)")),
+                new XElement(Ns + "Link",
+                    new XElement(Ns + "AdditionalLibraryDirectories",
+                        @"$(MSBuildThisFileDirectory)..\..\lib\native\;%(AdditionalLibraryDirectories)"))),
 
-            // Static: preprocessor define only.
-            // AdditionalDependencies uses full paths (see StaticLibGroup) so
-            // AdditionalLibraryDirectories is not needed and can be left empty —
-            // this matches VS property-grid display behaviour and the reference
-            // libbitcoin/secp256k1 package.targets approach.
+            // Static: preprocessor define.
             new XElement(Ns + "ItemDefinitionGroup",
                 new XAttribute("Condition",
                     $"'$(Linkage-UltrafastSecp256k1)' == 'static' And {PlatformCond}"),
@@ -82,12 +81,9 @@ internal static class Targets
             StaticLibGroup("Release"),
             StaticLibGroup("Debug"),
 
-            // Dynamic: full-path AdditionalDependencies (see SharedLibGroup).
+            // Dynamic: placeholder — no DLLs packaged yet.
             SharedLibGroup("Release"),
-            SharedLibGroup("Debug"),
-
-            DllCopyGroup("Release"),
-            DllCopyGroup("Debug")
+            SharedLibGroup("Debug")
         );
 
         var doc = new XDocument(
@@ -117,10 +113,11 @@ internal static class Targets
         var paths = new List<string>();
         if (Directory.Exists(Config.FlatLibDir))
         {
+            // Bare filenames only — AdditionalLibraryDirectories in the general
+            // group already points at lib\native\, so no path prefix is needed.
             paths = Directory.GetFiles(Config.FlatLibDir, "*.lib")
                 .Where(f => Path.GetFileName(f).Contains(suffix))
-                .Select(f =>
-                    $@"$(MSBuildThisFileDirectory)..\..\lib\native\{Path.GetFileName(f)}")
+                .Select(f => Path.GetFileName(f))
                 .ToList();
         }
 
@@ -146,37 +143,6 @@ internal static class Targets
                 $"'$(Linkage-UltrafastSecp256k1)' == 'dynamic' And '$(Configuration)' == '{config}' And {PlatformCond}"),
             new XElement(Ns + "Link",
                 new XElement(Ns + "AdditionalDependencies", "%(AdditionalDependencies)")));
-
-    // -----------------------------------------------------------------------
-    // DLL copy — copies shared library to the build output directory
-    // -----------------------------------------------------------------------
-
-    private static XElement DllCopyGroup(string config)
-    {
-        string condition =
-            $"'$(Linkage-UltrafastSecp256k1)' == 'dynamic' And '$(Configuration)' == '{config}' And {PlatformCond}";
-
-        var group = new XElement(Ns + "ItemGroup",
-            new XAttribute("Condition", condition));
-
-        string dllDir = Path.Combine(
-            Config.StagingDir, "x64", "shared", config, "lib");
-
-        if (Directory.Exists(dllDir))
-        {
-            foreach (string dll in Directory.GetFiles(dllDir, "*.dll"))
-            {
-                string pkgPath =
-                    $@"$(UltrafastSecp256k1_SharedLibDir){Path.GetFileName(dll)}";
-                group.Add(new XElement(Ns + "None",
-                    new XAttribute("Include", pkgPath),
-                    new XElement(Ns + "CopyToOutputDirectory", "PreserveNewest"),
-                    new XElement(Ns + "DeploymentContent", "true")));
-            }
-        }
-
-        return group;
-    }
 
     // -----------------------------------------------------------------------
     // Helpers
