@@ -53,17 +53,16 @@ internal static class Nuspec
 
             | Path | Description |
             |---|---|
-            | `build/native/include/secp256k1/` | C++ public headers |
-            | `build/native/include/ufsecp/` | C ABI public headers |
+            | `build/native/include/` | secp256k1 + ufsecp C/C++ public headers (flat) + `secp256k1/` C++ subdir |
             | `build/native/include/ufsecp_libbitcoin.h` | libbitcoin bridge header |
-            | `lib/native/*.lib` | All libs with encoded names (Boost-style) |
+            | `build/native/bin/*.lib` | All libs with encoded names (Boost-style) |
 
             ## Platforms
 
             - **Architecture:** x64 only
               (the library uses x64-only intrinsics; Win32 is not supported)
             - **Configurations:** Release, Debug
-            - **Link types:** Static (default), Shared
+            - **Link types:** `static` (/GL-free, default), `ltcg` (/GL, link /LTCG)
 
             ## Static linking (libbitcoin / default)
 
@@ -151,7 +150,8 @@ internal static class Nuspec
         {
             foreach (string file in Directory.GetFiles(Config.FlatLibDir, "*.lib"))
             {
-                string target = Path.Combine("lib", "native", Path.GetFileName(file));
+                // Next to the .targets so $(MSBuildThisFileDirectory)bin\ resolves.
+                string target = Path.Combine("build", "native", "bin", Path.GetFileName(file));
                 files.Add(FileEntry(file, target));
             }
         }

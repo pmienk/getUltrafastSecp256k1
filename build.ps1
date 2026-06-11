@@ -188,14 +188,34 @@ Write-Host "Version: $Version"
 # ---------------------------------------------------------------------------
 if (-not $SkipBuild) {
 
+    # -------------------------------------------------------------------------
+    # Gate the engine's hardcoded MSVC /GL (whole-program optimization) behind a
+    # cache flag so we can produce two static variants from the same source:
+    #   * static (.static.lib) — /GL OFF: clean, fast consumer link, no
+    #     "module compiled with /GL ... restarting link with /LTCG" warning.
+    #   * ltcg   (.ltcg.lib)   — /GL ON:  max runtime perf, consumer links /LTCG.
+    # Idempotent: only rewrites the line if it is still the unconditional form.
+    # -------------------------------------------------------------------------
+    $rootCml = Join-Path $sourceDir "CMakeLists.txt"
+    $cml = Get-Content $rootCml -Raw
+    $glOld = '$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>>:/GL>'
+    $glNew = '$<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:C,CXX>,$<STREQUAL:${SECP256K1_MSVC_WHOLE_PROGRAM},ON>>:/GL>'
+    if ($cml.Contains($glOld)) {
+        $cml = $cml.Replace($glOld, $glNew)
+        Set-Content -Path $rootCml -Value $cml -NoNewline -Encoding UTF8
+        Write-Host "Patched: gated MSVC /GL behind SECP256K1_MSVC_WHOLE_PROGRAM"
+    }
+
     $archs = @(
         [pscustomobject]@{ CMakeArch = "x64"; Dir = "x64" }
     )
 
-    # SECP256K1_BUILD_SHARED controls shared vs static in this project
+    # Two STATIC variants (libbitcoin links static only; shared/DLL is not
+    # shipped). They differ solely by MSVC whole-program optimization (/GL),
+    # which selects the .static.lib vs .ltcg.lib package slot.
     $linkTypes = @(
-        [pscustomobject]@{ BuildShared = "OFF"; Dir = "static" }
-        [pscustomobject]@{ BuildShared = "ON";  Dir = "shared" }
+        [pscustomobject]@{ WholeProgram = "OFF"; Dir = "static" }
+        [pscustomobject]@{ WholeProgram = "ON";  Dir = "ltcg" }
     )
 
     foreach ($arch in $archs) {
@@ -215,8 +235,10 @@ if (-not $SkipBuild) {
                 # Static CRT (/MT /MTd) — required for libbitcoin compatibility.
                 # Generator expression: MultiThreaded in Release, MultiThreadedDebug in Debug.
                 '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
-                # Shared vs static
-                ("-DSECP256K1_BUILD_SHARED=" + $link.BuildShared),
+                # Static libs only (shared/DLL not shipped).
+                "-DSECP256K1_BUILD_SHARED=OFF",
+                # /GL on for the ltcg variant, off for the static variant.
+                ("-DSECP256K1_MSVC_WHOLE_PROGRAM=" + $link.WholeProgram),
                 # Components to build
                 "-DSECP256K1_BUILD_CPU=ON",
                 "-DSECP256K1_BUILD_CABI=ON",
@@ -226,6 +248,12 @@ if (-not $SkipBuild) {
                 # consumers (libbitcoin) compiled but failed to link the
                 # secp256k1_* symbols.
                 "-DSECP256K1_BUILD_SHIM=ON",
+                # NOTE: do NOT enable SECP256K1_SHIM_RFC6979_COMPAT. That path
+                # appends an "ECDSA" algo16 tag to the RFC6979 nonce, but upstream
+                # secp256k1_ecdsa_sign calls the nonce fn with algo16=NULL (no
+                # tag). The shim's DEFAULT nonce (rfc6979_nonce, 97-byte HMAC
+                # V||0x00||seckey||msg) already matches upstream byte-for-byte —
+                # verified against libbitcoin's signature3 vector.
                 # Disable everything not needed in a redistributable package
                 "-DSECP256K1_BUILD_TESTS=OFF",
                 "-DSECP256K1_BUILD_BENCH=OFF",
@@ -249,6 +277,15 @@ if (-not $SkipBuild) {
                 Invoke-Cmake @("--build", $buildDir, "--config", $config, "--parallel")
 
                 Invoke-Cmake @("--install", $buildDir, "--config", $config, "--prefix", $installPrefix)
+
+                # ufsecp C ABI static lib has no cmake install() rule — copy it
+                # from the build tree into this variant's install lib dir so the
+                # consolidation step finds it alongside fastsecp256k1.lib.
+                $instLib = Join-Path $installPrefix "lib"
+                New-Item -ItemType Directory -Force $instLib | Out-Null
+                $ufsecpSrc = Join-Path $buildDir ("include\ufsecp\" + $config)
+                Get-ChildItem $ufsecpSrc -Filter "ufsecp_s*.lib" -ErrorAction SilentlyContinue |
+                    Copy-Item -Destination $instLib -Force
             }
         }
     }
@@ -283,26 +320,17 @@ if (-not $SkipBuild) {
         ("-DCMAKE_PREFIX_PATH=" + (Join-Path $stagingDir "x64\static\Release")),
         "-DUFSECP_LBTC_BUILD_TESTS=OFF",
         "-DUFSECP_LBTC_BUILD_EXAMPLE=OFF",
+        # dev added a throughput bench (default ON) that links the engine; we
+        # build only the bridge archive standalone, so disable it too.
+        "-DUFSECP_LBTC_BUILD_BENCH=OFF",
         "-DUFSECP_LBTC_WITH_GPU=OFF"
     )
 
+    # Built once (the bridge is a small /GL-free archive); the consolidation
+    # step copies it into both the static and ltcg package slots.
     foreach ($config in @("Release", "Debug")) {
-        Write-Step ("Build+Copy  bridge/" + $config)
+        Write-Step ("Build  bridge/" + $config)
         Invoke-Cmake @("--build", $bridgeBuildDir, "--config", $config, "--parallel")
-
-        $libDst = Join-Path $stagingDir ("x64\static\" + $config + "\lib")
-        New-Item -ItemType Directory -Force $libDst | Out-Null
-
-        # Bridge wrapper
-        $libSrc = Join-Path $bridgeBuildDir $config
-        Get-ChildItem $libSrc -Filter "ufsecp_lbtc_bridge*.lib" -ErrorAction SilentlyContinue |
-            Copy-Item -Destination $libDst -Force
-
-        # ufsecp C ABI static lib — no cmake install() rule, copy from build output.
-        # Required because the bridge calls ufsecp_* functions declared in ufsecp.h.
-        $ufsecpLibSrc = Join-Path $buildRoot ("x64_static\include\ufsecp\" + $config)
-        Get-ChildItem $ufsecpLibSrc -Filter "ufsecp_s*.lib" -ErrorAction SilentlyContinue |
-            Copy-Item -Destination $libDst -Force
     }
 
     # -------------------------------------------------------------------------
@@ -311,14 +339,16 @@ if (-not $SkipBuild) {
     #     cmake install only copies include/secp256k1/ (the C++ headers).
     #     The ufsecp C ABI headers (ufsecp.h, ufsecp_error.h, ...) live in
     #     include/ufsecp/ in the source tree and must be copied manually.
-    #     They are needed at runtime by ufsecp_libbitcoin.h via relative
-    #     includes such as "ufsecp_error.h".
+    #
+    #     Flattened into the include/ ROOT (not include/ufsecp/) so the single
+    #     `include\` entry in the .targets resolves ufsecp_libbitcoin.h's
+    #     unprefixed relative include ("ufsecp_error.h").
     # -------------------------------------------------------------------------
     $ufsecpSrcDir = Join-Path $sourceDir "include\ufsecp"
-    $ufsecpDstDir = Join-Path $stagingDir "x64\static\Release\include\ufsecp"
+    $ufsecpDstDir = Join-Path $stagingDir "x64\static\Release\include"
     New-Item -ItemType Directory -Force $ufsecpDstDir | Out-Null
     Get-ChildItem $ufsecpSrcDir -Filter "*.h" | Copy-Item -Destination $ufsecpDstDir -Force
-    Write-Host "ufsecp headers copied to staging."
+    Write-Host "ufsecp headers copied to staging (flat)."
 
     # Copy the bridge public header into the canonical include tree so Targets.cs
     # includes it when it copies headers to the package.
@@ -342,6 +372,12 @@ if (-not $SkipBuild) {
     $shimDstDir = Join-Path $stagingDir "x64\static\Release\include"
     Get-ChildItem $shimSrcDir -Filter "*.h" | Copy-Item -Destination $shimDstDir -Force
     Write-Host "Shim headers copied to staging."
+
+    # Drop the redundant include\ufsecp\ subdir installed by cmake: the ufsecp
+    # C ABI headers are already flattened into include\ root (3b-i), which is the
+    # only dir the .targets puts on the include path. Keeps the package tree clean.
+    $ufsecpSubdir = Join-Path $stagingDir "x64\static\Release\include\ufsecp"
+    if (Test-Path $ufsecpSubdir) { Remove-Item $ufsecpSubdir -Recurse -Force }
 
     # -------------------------------------------------------------------------
     # 3d. Flat lib consolidation
@@ -369,10 +405,13 @@ if (-not $SkipBuild) {
 
     $ver = $Version.Replace(".", "_")
 
+    # Name: {lib}-x64-vc145-{rt}-{ver}.{variant}.lib
+    #   rt:      mt-s (Release /MT) | mt-sgd (Debug /MTd)
+    #   variant: static (/GL off) | ltcg (/GL on)
     function Copy-Flat {
-        param([string]$Src, [string]$Base, [string]$Suffix)
+        param([string]$Src, [string]$Base, [string]$Rt, [string]$Variant)
         if (Test-Path $Src) {
-            $dst = Join-Path $flatLibDir ($Base + "-x64-vc145-" + $Suffix + "-" + $ver + ".lib")
+            $dst = Join-Path $flatLibDir ($Base + "-x64-vc145-" + $Rt + "-" + $ver + "." + $Variant + ".lib")
             Copy-Item $Src $dst -Force
             Write-Host ("  " + (Split-Path $dst -Leaf))
         } else {
@@ -380,15 +419,21 @@ if (-not $SkipBuild) {
         }
     }
 
-    $sR = Join-Path $stagingDir "x64\static\Release\lib"
-    $sD = Join-Path $stagingDir "x64\static\Debug\lib"
+    # The bridge is built once (/GL-free) and goes into both variant slots.
+    $brR = Join-Path $bridgeBuildDir "Release\ufsecp_lbtc_bridge.lib"
+    $brD = Join-Path $bridgeBuildDir "Debug\ufsecp_lbtc_bridged.lib"
 
-    Copy-Flat (Join-Path $sR "fastsecp256k1.lib")       "fastsecp256k1"      "mt-s"
-    Copy-Flat (Join-Path $sR "ufsecp_s.lib")             "ufsecp_s"           "mt-s"
-    Copy-Flat (Join-Path $sR "ufsecp_lbtc_bridge.lib")   "ufsecp_lbtc_bridge" "mt-s"
-    Copy-Flat (Join-Path $sD "fastsecp256k1d.lib")       "fastsecp256k1"      "mt-sgd"
-    Copy-Flat (Join-Path $sD "ufsecp_sd.lib")             "ufsecp_s"           "mt-sgd"
-    Copy-Flat (Join-Path $sD "ufsecp_lbtc_bridged.lib")   "ufsecp_lbtc_bridge" "mt-sgd"
+    foreach ($variant in @("static", "ltcg")) {
+        $R = Join-Path $stagingDir ("x64\" + $variant + "\Release\lib")
+        $D = Join-Path $stagingDir ("x64\" + $variant + "\Debug\lib")
+
+        Copy-Flat (Join-Path $R "fastsecp256k1.lib")  "fastsecp256k1"      "mt-s"   $variant
+        Copy-Flat (Join-Path $R "ufsecp_s.lib")        "ufsecp_s"           "mt-s"   $variant
+        Copy-Flat $brR                                  "ufsecp_lbtc_bridge" "mt-s"   $variant
+        Copy-Flat (Join-Path $D "fastsecp256k1d.lib") "fastsecp256k1"      "mt-sgd" $variant
+        Copy-Flat (Join-Path $D "ufsecp_sd.lib")       "ufsecp_s"           "mt-sgd" $variant
+        Copy-Flat $brD                                  "ufsecp_lbtc_bridge" "mt-sgd" $variant
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -397,6 +442,11 @@ if (-not $SkipBuild) {
 if ($Pack) {
     Assert-Tool "dotnet"
     Assert-Tool "nuget"
+
+    # Wipe the intermediate _package tree first. The builder's header copy only
+    # adds/overwrites (never deletes), so a stale layout (e.g. a removed include
+    # subdir) would otherwise persist across packs.
+    Remove-Item (Join-Path $repoRoot "_package") -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Step "Build C# packager"
     $builderSln = Join-Path $repoRoot "builder\builder.sln"

@@ -43,6 +43,20 @@ internal static class Targets
         string headerDst = Path.Combine(targetsDir, "include");
         CopyDirectory(headerSrc, headerDst);
 
+        // General block ClCompile: WITH_ULTRAFAST + flat include\, and (for any
+        // non-dynamic linkage) UFSECP_STATIC_LIB so ufsecp.h drops the
+        // __declspec(dllimport) — the macro must match ufsecp_version.h exactly.
+        var generalCl = new XElement(Ns + "ClCompile",
+            new XElement(Ns + "PreprocessorDefinitions",
+                "WITH_ULTRAFAST;%(PreprocessorDefinitions)"),
+            new XElement(Ns + "AdditionalIncludeDirectories",
+                @"$(MSBuildThisFileDirectory)include\;%(AdditionalIncludeDirectories)"));
+
+        var generalClStatic = new XElement(Ns + "ClCompile",
+            new XAttribute("Condition", "'$(Linkage-ultrafast)' != 'dynamic'"),
+            new XElement(Ns + "PreprocessorDefinitions",
+                "UFSECP_STATIC_LIB;%(PreprocessorDefinitions)"));
+
         var project = new XElement(Ns + "Project",
 
             // Load the property-page schema so VS shows the Linkage drop-down
@@ -51,39 +65,28 @@ internal static class Targets
                     new XAttribute("Include",
                         @"$(MSBuildThisFileDirectory)package.xml"))),
 
-            // General: fired for any non-empty linkage (static or dynamic).
-            // Both include\ and include\ufsecp\ are needed so that relative
-            // includes inside ufsecp_libbitcoin.h (e.g. "ufsecp_error.h") resolve.
-            // WITH_ULTRAFAST lets consumer code conditionally compile the
-            // UltrafastSecp256k1 code path.
+            // General: any non-empty linkage on x64. Libs live next to the
+            // .targets in bin\.
             new XElement(Ns + "ItemDefinitionGroup",
                 new XAttribute("Condition",
-                    $"'$(Linkage-ultrafast)' != '' And {PlatformCond}"),
-                new XElement(Ns + "ClCompile",
-                    new XElement(Ns + "AdditionalIncludeDirectories",
-                        @"$(MSBuildThisFileDirectory)include\;%(AdditionalIncludeDirectories)"),
-                    new XElement(Ns + "AdditionalIncludeDirectories",
-                        @"$(MSBuildThisFileDirectory)include\ufsecp\;%(AdditionalIncludeDirectories)"),
-                    new XElement(Ns + "PreprocessorDefinitions",
-                        "WITH_ULTRAFAST;%(PreprocessorDefinitions)")),
+                    "'$(Platform)' == 'x64' And '$(Linkage-ultrafast)' != ''"),
+                generalCl,
+                generalClStatic,
                 new XElement(Ns + "Link",
                     new XElement(Ns + "AdditionalLibraryDirectories",
-                        @"$(MSBuildThisFileDirectory)..\..\lib\native\;%(AdditionalLibraryDirectories)"))),
+                        @"$(MSBuildThisFileDirectory)bin\;%(AdditionalLibraryDirectories)"))),
 
-            // Static: preprocessor define.
-            new XElement(Ns + "ItemDefinitionGroup",
-                new XAttribute("Condition",
-                    $"'$(Linkage-ultrafast)' == 'static' And {PlatformCond}"),
-                new XElement(Ns + "ClCompile",
-                    new XElement(Ns + "PreprocessorDefinitions",
-                        "UFSECP_STATIC;%(PreprocessorDefinitions)"))),
+            // static (*.static.lib) — /GL-free, clean consumer link.
+            LibGroup("static", "static.lib", "Release"),
+            LibGroup("static", "static.lib", "Debug"),
 
-            StaticLibGroup("Release"),
-            StaticLibGroup("Debug"),
+            // ltcg (*.ltcg.lib) — /GL, consumer links with /LTCG.
+            LibGroup("ltcg", "ltcg.lib", "Release"),
+            LibGroup("ltcg", "ltcg.lib", "Debug"),
 
-            // Dynamic: placeholder — no DLLs packaged yet.
-            SharedLibGroup("Release"),
-            SharedLibGroup("Debug")
+            // dynamic (*.lib) — placeholder; DLLs not shipped.
+            LibGroup("dynamic", "lib", "Release"),
+            LibGroup("dynamic", "lib", "Debug")
         );
 
         var doc = new XDocument(
@@ -97,52 +100,50 @@ internal static class Targets
     }
 
     // -----------------------------------------------------------------------
-    // Static lib groups — scanned from the flat staging lib dir.
+    // Lib groups — one per (linkage, config).
     //
-    // Flat lib naming (Boost-style, set by build.ps1):
-    //   mt-s   in the filename → Release (/MT)
-    //   mt-sgd in the filename → Debug   (/MTd)
+    // Flat lib naming (set by build.ps1):
+    //   {lib}-x64-vc145-{mt-s|mt-sgd}-{ver}.{static|ltcg}.lib
+    //     mt-s   → Release (/MT)   mt-sgd → Debug (/MTd)
+    //     static → /GL-free        ltcg   → /GL (consumer links /LTCG)
     //
-    // Using Contains() rather than a glob so "-mt-s-" never matches "-mt-sgd-".
+    // The canonical lib set is derived from the static variant (always built)
+    // and reformatted with each linkage's extension. This keeps the three
+    // linkage groups identical in membership/order, and lets the dynamic group
+    // list names for consistency even though DLLs are not shipped.
+    //
+    // Using Contains("-mt-s-") never matches "-mt-sgd-" (no trailing '-').
     // -----------------------------------------------------------------------
 
-    private static XElement StaticLibGroup(string config)
+    private static XElement LibGroup(string linkage, string ext, string config)
     {
-        string suffix = config == "Release" ? "-mt-s-" : "-mt-sgd-";
+        string rt = config == "Release" ? "-mt-s-" : "-mt-sgd-";
 
-        var paths = new List<string>();
+        var deps = new List<string>();
         if (Directory.Exists(Config.FlatLibDir))
         {
-            // Bare filenames — AdditionalLibraryDirectories in the general group
-            // points at lib\native\, so no path prefix is needed here.
-            paths = Directory.GetFiles(Config.FlatLibDir, "*.lib")
-                .Where(f => Path.GetFileName(f).Contains(suffix))
-                .Select(f => Path.GetFileName(f))
-                .ToList();
+            const string staticExt = ".static.lib";
+            foreach (string f in Directory.GetFiles(Config.FlatLibDir, "*" + staticExt))
+            {
+                string name = Path.GetFileName(f);
+                if (!name.Contains(rt)) continue;
+                string stem = name[..^staticExt.Length];   // drop ".static.lib"
+                deps.Add($"{stem}.{ext}");
+            }
+            deps.Sort(StringComparer.Ordinal);              // fast…, bridge, ufsecp_s
         }
 
-        if (paths.Count == 0)
-            Console.WriteLine($"WARNING: no flat libs found for config={config} (suffix={suffix})");
+        if (deps.Count == 0)
+            Console.WriteLine($"WARNING: no libs for linkage={linkage} config={config} (rt={rt})");
 
-        string deps = string.Join(";", paths) + ";%(AdditionalDependencies)";
+        string list = string.Join(";", deps) + ";%(AdditionalDependencies)";
 
         return new XElement(Ns + "ItemDefinitionGroup",
             new XAttribute("Condition",
-                $"'$(Linkage-ultrafast)' == 'static' And '$(Configuration)' == '{config}' And {PlatformCond}"),
+                $"{PlatformCond} And '$(Linkage-ultrafast)' == '{linkage}' And $(Configuration.IndexOf('{config}')) != -1"),
             new XElement(Ns + "Link",
-                new XElement(Ns + "AdditionalDependencies", deps)));
+                new XElement(Ns + "AdditionalDependencies", list)));
     }
-
-    // -----------------------------------------------------------------------
-    // Shared groups — placeholder; shared libs not yet in flat staging.
-    // -----------------------------------------------------------------------
-
-    private static XElement SharedLibGroup(string config) =>
-        new XElement(Ns + "ItemDefinitionGroup",
-            new XAttribute("Condition",
-                $"'$(Linkage-ultrafast)' == 'dynamic' And '$(Configuration)' == '{config}' And {PlatformCond}"),
-            new XElement(Ns + "Link",
-                new XElement(Ns + "AdditionalDependencies", "%(AdditionalDependencies)")));
 
     // -----------------------------------------------------------------------
     // Helpers
