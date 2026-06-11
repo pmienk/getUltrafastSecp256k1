@@ -340,15 +340,16 @@ if (-not $SkipBuild) {
     #     The ufsecp C ABI headers (ufsecp.h, ufsecp_error.h, ...) live in
     #     include/ufsecp/ in the source tree and must be copied manually.
     #
-    #     Flattened into the include/ ROOT (not include/ufsecp/) so the single
+    #     Kept in the include/ufsecp/ SUBDIR (natural layout). The single
     #     `include\` entry in the .targets resolves ufsecp_libbitcoin.h's
-    #     unprefixed relative include ("ufsecp_error.h").
+    #     prefixed include ("ufsecp/ufsecp_error.h"), consistent with the
+    #     secp256k1/-prefixed engine headers.
     # -------------------------------------------------------------------------
     $ufsecpSrcDir = Join-Path $sourceDir "include\ufsecp"
-    $ufsecpDstDir = Join-Path $stagingDir "x64\static\Release\include"
+    $ufsecpDstDir = Join-Path $stagingDir "x64\static\Release\include\ufsecp"
     New-Item -ItemType Directory -Force $ufsecpDstDir | Out-Null
     Get-ChildItem $ufsecpSrcDir -Filter "*.h" | Copy-Item -Destination $ufsecpDstDir -Force
-    Write-Host "ufsecp headers copied to staging (flat)."
+    Write-Host "ufsecp headers copied to staging (include/ufsecp/)."
 
     # Copy the bridge public header into the canonical include tree so Targets.cs
     # includes it when it copies headers to the package.
@@ -372,12 +373,6 @@ if (-not $SkipBuild) {
     $shimDstDir = Join-Path $stagingDir "x64\static\Release\include"
     Get-ChildItem $shimSrcDir -Filter "*.h" | Copy-Item -Destination $shimDstDir -Force
     Write-Host "Shim headers copied to staging."
-
-    # Drop the redundant include\ufsecp\ subdir installed by cmake: the ufsecp
-    # C ABI headers are already flattened into include\ root (3b-i), which is the
-    # only dir the .targets puts on the include path. Keeps the package tree clean.
-    $ufsecpSubdir = Join-Path $stagingDir "x64\static\Release\include\ufsecp"
-    if (Test-Path $ufsecpSubdir) { Remove-Item $ufsecpSubdir -Recurse -Force }
 
     # -------------------------------------------------------------------------
     # 3d. Flat lib consolidation
