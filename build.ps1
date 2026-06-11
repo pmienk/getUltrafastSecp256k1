@@ -220,7 +220,12 @@ if (-not $SkipBuild) {
                 # Components to build
                 "-DSECP256K1_BUILD_CPU=ON",
                 "-DSECP256K1_BUILD_CABI=ON",
-                "-DSECP256K1_BUILD_SHIM=OFF",
+                # Compile the libsecp256k1-compatible shim (secp256k1_* C ABI)
+                # directly into fastsecp256k1 so the package can substitute
+                # libsecp256k1. With OFF only the shim headers shipped, so
+                # consumers (libbitcoin) compiled but failed to link the
+                # secp256k1_* symbols.
+                "-DSECP256K1_BUILD_SHIM=ON",
                 # Disable everything not needed in a redistributable package
                 "-DSECP256K1_BUILD_TESTS=OFF",
                 "-DSECP256K1_BUILD_BENCH=OFF",
@@ -268,10 +273,11 @@ if (-not $SkipBuild) {
         "-DCMAKE_DEBUG_POSTFIX=d",
         # Static CRT — must match the main library and libbitcoin.
         '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
-        # UFSECP_STATIC removes __declspec(dllimport) from ufsecp.h so the
+        # UFSECP_STATIC_LIB removes __declspec(dllimport) from ufsecp.h so the
         # bridge links against the static C ABI (ufsecp_s.lib) rather than
-        # expecting DLL import symbols (__imp_ufsecp_*).
-        "-DCMAKE_CXX_FLAGS=/DUFSECP_STATIC",
+        # expecting DLL import symbols (__imp_ufsecp_*). The macro name must
+        # match ufsecp_version.h exactly (UFSECP_STATIC_LIB, not UFSECP_STATIC).
+        "-DCMAKE_CXX_FLAGS=/DUFSECP_STATIC_LIB",
         # Point cmake at the installed secp256k1-fast package config so the
         # bridge finds fastsecp256k1 without needing the full source tree.
         ("-DCMAKE_PREFIX_PATH=" + (Join-Path $stagingDir "x64\static\Release")),
@@ -353,6 +359,12 @@ if (-not $SkipBuild) {
     # -------------------------------------------------------------------------
     Write-Step "Consolidating libs to flat staging dir"
     $flatLibDir = Join-Path $stagingDir "lib"
+    # Wipe stale libs first. The flat dir embeds the version in each filename, so
+    # building a new version on top of an existing staging would otherwise leave
+    # the previous version's libs behind — the packager globs this dir, so they
+    # would be packaged AND listed in .targets (with the old, broken libs first
+    # in link order). Clean slate guarantees the package contains only this build.
+    if (Test-Path $flatLibDir) { Remove-Item $flatLibDir -Recurse -Force }
     New-Item -ItemType Directory -Force $flatLibDir | Out-Null
 
     $ver = $Version.Replace(".", "_")
