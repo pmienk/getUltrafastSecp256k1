@@ -4,7 +4,7 @@
     Build UltrafastSecp256k1 and package it as a NuGet package.
 
 .DESCRIPTION
-    Clones shrec/UltrafastSecp256k1 (branch: main), builds with CMake and the
+    Clones shrec/UltrafastSecp256k1 (branch: dev), builds with CMake and the
     Visual Studio 2026 generator (vc145) for x64 in Release/Debug x
     static/shared, installs to _staging/, then invokes the C# builder to
     produce the .nupkg.
@@ -22,7 +22,7 @@
     Ignored when -Version is specified explicitly.  Default: 0.
 
 .PARAMETER SourceBranch
-    Git branch to clone. Default: main.
+    Git branch to clone. Default: dev (carries the libbitcoin shim + bridge fixes).
 
 .PARAMETER Generator
     CMake generator name. Default: "Visual Studio 18 2026".
@@ -51,7 +51,7 @@
 param(
     [string] $Version           = "",
     [int]    $PackagingRevision = 1,
-    [string] $SourceBranch      = "main",
+    [string] $SourceBranch      = "dev",
     [string] $Generator         = "Visual Studio 18 2026",
     [switch] $SkipClone,
     [switch] $SkipBuild,
