@@ -41,6 +41,12 @@ internal static class Config
     public static string PackageId => $"UltrafastSecp256k1-{Toolset}";
 
     /// <summary>
+    /// MSBuild $(PlatformToolset) the .targets conditions match on, derived from
+    /// the package toolset: vc145 -> v145, vc143 -> v143.
+    /// </summary>
+    public static string PlatformToolset => "v" + Toolset.Substring(2);
+
+    /// <summary>
     /// Flat lib directory: all compiled .lib files with encoded names live here.
     /// Naming: {lib}-x64-{toolset}-{runtime}-{version}.lib
     ///   mt-s   = /MT Release static

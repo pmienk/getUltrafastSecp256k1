@@ -26,10 +26,10 @@ internal static class Targets
         "http://schemas.microsoft.com/developer/msbuild/2003";
 
     // Restricts all lib and include conditions to our supported target:
-    // x64 architecture, vc145 toolset only.  Prevents the targets from
-    // firing on ARM, ARM64, or older/newer toolsets where no libs exist.
-    private const string PlatformCond =
-        "'$(Platform)' == 'x64' And '$(PlatformToolset)' == 'v145'";
+    // x64 architecture, this package's toolset only (v145 / v143). Prevents the
+    // targets from firing on ARM, ARM64, or a toolset where no libs exist.
+    private static string PlatformCond =>
+        $"'$(Platform)' == 'x64' And '$(PlatformToolset)' == '{Config.PlatformToolset}'";
 
     public static void Generate(string packageDir)
     {

@@ -52,7 +52,9 @@ param(
     [string] $Version           = "",
     [int]    $PackagingRevision = 1,
     [string] $SourceBranch      = "dev",
-    [string] $Generator         = "Visual Studio 18 2026",
+    [ValidateSet("vc145", "vc143")]
+    [string] $Toolset           = "vc145",
+    [string] $Generator         = "",
     [switch] $SkipClone,
     [switch] $SkipBuild,
     [switch] $Pack
@@ -62,31 +64,43 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 # ---------------------------------------------------------------------------
-# Paths -- all relative to the repository root
+# Toolset -> Visual Studio generator / cmake / MSBuild PlatformToolset.
+#
+# Each toolset builds with its OWN VS generator + cmake and uses its OWN
+# _build\<toolset>\ and _staging\<toolset>\ subtree, so the vc145 (VS 2026) and
+# vc143 (VS 2022) pipelines are fully isolated and never clobber each other.
+# The package id (UltrafastSecp256k1-<toolset>) keeps the outputs distinct too.
+# ---------------------------------------------------------------------------
+$toolsets = @{
+    "vc145" = [pscustomobject]@{ Generator = "Visual Studio 18 2026"; CMakeToolset = "v145"; VsDir = "18\Community" }
+    "vc143" = [pscustomobject]@{ Generator = "Visual Studio 17 2022"; CMakeToolset = "v143"; VsDir = "2022\Community" }
+}
+if (-not $toolsets.ContainsKey($Toolset)) { throw "Unsupported -Toolset '$Toolset' (use vc145 or vc143)." }
+$tc = $toolsets[$Toolset]
+if (-not $Generator) { $Generator = $tc.Generator }
+$cmakeToolset = $tc.CMakeToolset
+Write-Host "Toolset: $Toolset  (generator: $Generator, -T $cmakeToolset)"
+
+# ---------------------------------------------------------------------------
+# Paths -- per-toolset subtree so the two pipelines stay isolated.
 # ---------------------------------------------------------------------------
 $repoRoot   = $PSScriptRoot
 $sourceDir  = Join-Path $repoRoot "_source\UltrafastSecp256k1"
-$buildRoot  = Join-Path $repoRoot "_build"
-$stagingDir = Join-Path $repoRoot "_staging"
+$buildRoot  = Join-Path $repoRoot ("_build\"   + $Toolset)
+$stagingDir = Join-Path $repoRoot ("_staging\" + $Toolset)
 
 # ---------------------------------------------------------------------------
-# cmake discovery
-# If cmake is not on PATH (common when not running inside a VS Developer
-# shell), locate it via vswhere in the Visual Studio installation.
+# cmake -- pin to the selected toolset's own Visual Studio cmake so the matching
+# VS instance + generator are used (a newer cmake can target an older VS, but
+# pinning removes ambiguity and guarantees the right toolchain).
 # ---------------------------------------------------------------------------
-if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-    $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (Test-Path $vswhere) {
-        $vsRoot   = & $vswhere -latest -property installationPath 2>$null
-        $cmakeDir = Join-Path $vsRoot "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
-        if (Test-Path $cmakeDir) {
-            $env:PATH = $cmakeDir + ";" + $env:PATH
-            Write-Host "cmake added from: $cmakeDir"
-        }
-    }
-    if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-        throw "cmake not found. Install CMake or run from a VS Developer shell."
-    }
+$vsCmakeBin = Join-Path "C:\Program Files\Microsoft Visual Studio" `
+    (Join-Path $tc.VsDir "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin")
+if (Test-Path (Join-Path $vsCmakeBin "cmake.exe")) {
+    $env:PATH = $vsCmakeBin + ";" + $env:PATH
+    Write-Host "cmake ($Toolset): $vsCmakeBin"
+} elseif (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+    throw "cmake not found for $Toolset at $vsCmakeBin. Install the VS CMake component."
 }
 
 # ---------------------------------------------------------------------------
@@ -230,6 +244,7 @@ if (-not $SkipBuild) {
                 "-B", $buildDir,
                 "-G", $Generator,
                 "-A", $arch.CMakeArch,
+                "-T", $cmakeToolset,
                 # Debug libs get a 'd' suffix so Release and Debug can coexist
                 "-DCMAKE_DEBUG_POSTFIX=d",
                 # Static CRT (/MT /MTd) — required for libbitcoin compatibility.
@@ -307,6 +322,7 @@ if (-not $SkipBuild) {
         "-B", $bridgeBuildDir,
         "-G", $Generator,
         "-A", "x64",
+        "-T", $cmakeToolset,
         "-DCMAKE_DEBUG_POSTFIX=d",
         # Static CRT — must match the main library and libbitcoin.
         '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
@@ -400,13 +416,13 @@ if (-not $SkipBuild) {
 
     $ver = $Version.Replace(".", "_")
 
-    # Name: {lib}-x64-vc145-{rt}-{ver}.{variant}.lib
+    # Name: {lib}-x64-{toolset}-{rt}-{ver}.{variant}.lib
     #   rt:      mt-s (Release /MT) | mt-sgd (Debug /MTd)
     #   variant: static (/GL off) | ltcg (/GL on)
     function Copy-Flat {
         param([string]$Src, [string]$Base, [string]$Rt, [string]$Variant)
         if (Test-Path $Src) {
-            $dst = Join-Path $flatLibDir ($Base + "-x64-vc145-" + $Rt + "-" + $ver + "." + $Variant + ".lib")
+            $dst = Join-Path $flatLibDir ($Base + "-x64-" + $Toolset + "-" + $Rt + "-" + $ver + "." + $Variant + ".lib")
             Copy-Item $Src $dst -Force
             Write-Host ("  " + (Split-Path $dst -Leaf))
         } else {
@@ -441,7 +457,7 @@ if ($Pack) {
     # Wipe the intermediate _package tree first. The builder's header copy only
     # adds/overwrites (never deletes), so a stale layout (e.g. a removed include
     # subdir) would otherwise persist across packs.
-    Remove-Item (Join-Path $repoRoot "_package") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $repoRoot ("_package\" + $Toolset)) -Recurse -Force -ErrorAction SilentlyContinue
 
     Write-Step "Build C# packager"
     $builderSln = Join-Path $repoRoot "builder\builder.sln"
@@ -454,7 +470,7 @@ if ($Pack) {
         --staging $stagingDir `
         --output  $repoRoot   `
         --version $Version    `
-        --toolset "vc145"
+        --toolset $Toolset
     if ($LASTEXITCODE -ne 0) { throw "builder.exe failed" }
 
     Write-Host ""

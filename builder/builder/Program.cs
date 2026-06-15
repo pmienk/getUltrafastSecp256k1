@@ -25,8 +25,9 @@ if (string.IsNullOrEmpty(Config.OutputDir))  Die("--output <path> is required");
 if (string.IsNullOrEmpty(Config.Version))    Die("--version <x.y.z> is required");
 if (!Directory.Exists(Config.StagingDir))    Die($"Staging directory not found: {Config.StagingDir}");
 
-// The intermediate _package/ directory holds the NuGet layout before packing
-string packageDir = Path.Combine(Config.OutputDir, "_package");
+// The intermediate _package/<toolset>/ directory holds the NuGet layout before
+// packing. Namespaced by toolset so the vc145 and vc143 pipelines stay isolated.
+string packageDir = Path.Combine(Config.OutputDir, "_package", Config.Toolset);
 Directory.CreateDirectory(packageDir);
 
 // 1. Generate package.xml (VS property-page schema for the Linkage drop-down)
