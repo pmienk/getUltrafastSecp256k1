@@ -259,10 +259,10 @@ if (-not $SkipBuild) {
                 "-DSECP256K1_BUILD_BENCH=OFF",
                 "-DSECP256K1_BUILD_EXAMPLES=OFF",
                 "-DSECP256K1_BUILD_JAVA=OFF",
-                "-DSECP256K1_BUILD_CUDA=OFF",
-                "-DSECP256K1_BUILD_ROCM=OFF",
-                "-DSECP256K1_BUILD_OPENCL=OFF",
-                "-DSECP256K1_BUILD_METAL=OFF",
+                "-DSECP256K1_BUILD_CUDA=ON",
+                "-DSECP256K1_BUILD_ROCM=ON",
+                "-DSECP256K1_BUILD_OPENCL=ON",
+                "-DSECP256K1_BUILD_METAL=ON",
                 "-DSECP256K1_INSTALL=ON",
                 "-DSECP256K1_INSTALL_PKGCONFIG=OFF"
             )
